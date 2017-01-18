@@ -51,6 +51,20 @@ typedef struct np_dst_info_s {
 } np_dst_info_t;
 
 /**
+ * @brief Structure representing one notification store data file in memory.
+ */
+typedef struct np_notif_store_data_ctx_s {
+    const char *file_name;       /**< Name of the file with data. */
+    size_t file_size;            /**< Size of the file to determine file changes from another process. */
+    struct lyd_node *data_tree;  /**< Data tree with the notifications. */
+    int fd;                      /**< File descriptor of the opened data file, -1 if not used. */
+    bool cached;                 /**< TRUE in case that the data_tree should be cached. */
+    bool modified;               /**< The data tree has been modified since the last read, write is needed. */
+    time_t last_access;          /**< Time of the last access to this data. In case of multiple accesses per second,
+                                      data will be cached and write-back will be performed. */
+} np_notif_store_data_ctx_t;
+
+/**
  * @brief Context holding information about notifications sent per commit.
  */
 typedef struct np_commit_ctx_s {
@@ -78,7 +92,8 @@ typedef struct np_ctx_s {
     const char *data_search_dir;          /**< Directory containing the data files. */
     const struct lys_module *ns_schema;   /**< Schema tree of the notification store YANG. */
     sr_locking_set_t *lock_ctx;           /**< Context for locking notification store files. */
-    bool do_notif_store_cleanup;          /**< TRUE if notification store cleanups should be performed.*/
+    bool do_notif_store_cleanup;          /**< TRUE if notification store cleanups should be performed. */
+    sr_btree_t *notif_store_data;          /**< Binary tree with notification store data. */
 } np_ctx_t;
 
 /**
@@ -126,6 +141,44 @@ np_dst_info_cleanup(void *dst_info_p)
         free(dst_info->subscribed_modules);
         free((void*)dst_info->dst_address);
         free(dst_info);
+    }
+}
+
+/**
+ * @brief Compares two np_notif_store_data_ctx_t structures stored in the binary tree.
+ */
+static int
+np_notif_store_data_cmp_cb(const void *a, const void *b)
+{
+    assert(a);
+    assert(b);
+    np_notif_store_data_ctx_t *data_a = (np_notif_store_data_ctx_t *) a;
+    np_notif_store_data_ctx_t *data_b = (np_notif_store_data_ctx_t *) b;
+
+    int res = strcmp(data_a->file_name, data_b->file_name);
+    if (res == 0) {
+        return 0;
+    } else if (res < 0) {
+        return -1;
+    } else {
+        return 1;
+    }
+}
+
+/**
+ * @brief Frees ac_module_info_t stored in the binary tree.
+ */
+static void
+np_notif_store_data_free_cb(void *item)
+{
+    np_notif_store_data_ctx_t *data = (np_notif_store_data_ctx_t *) item;
+
+    if (NULL != data) {
+        free((void*)data->file_name);
+        if (NULL != data->data_tree) {
+            lyd_free_withsiblings(data->data_tree);
+        }
+        free(data);
     }
 }
 
@@ -474,6 +527,117 @@ np_cleanup_data_tree(np_ctx_t *np_ctx, struct lyd_node *data_tree, int fd)
 }
 
 /**
+ * @brief TODO
+ */
+static int
+np_get_notif_store_data(np_ctx_t *np_ctx, const ac_ucred_t *user_cred, const char *data_filename,
+        const bool read_only, np_notif_store_data_ctx_t **data_p)
+{
+    np_notif_store_data_ctx_t data_lookup = { 0, }, *data = NULL, *data_tmp = NULL;
+    int rc = SR_ERR_OK;
+
+    CHECK_NULL_ARG4(np_ctx, np_ctx->rp_ctx, data_filename, data_p);
+
+    pthread_rwlock_rdlock(&np_ctx->lock);
+
+    /* find info entry matching with the destination */
+    data_lookup.file_name = data_filename;
+    data = sr_btree_search(np_ctx->notif_store_data, &data_lookup);
+
+    if (NULL == data) {
+        /* data not found, create & insert */
+        data_tmp = calloc(1, sizeof(*data_tmp));
+        CHECK_NULL_NOMEM_GOTO(data_tmp, rc, cleanup);
+
+        data_tmp->fd = -1;
+        data_tmp->file_name = strdup(data_filename);
+        CHECK_NULL_NOMEM_GOTO(data_tmp->file_name, rc, cleanup);
+
+        rc = sr_btree_insert(np_ctx->notif_store_data, data_tmp);
+        data = data_tmp;
+        data_tmp = NULL;
+    }
+
+    // TODO: lock data
+
+    if (NULL != data->data_tree) {
+        /* use cached data if it is valid */
+        // TODO: check size
+        data->cached = true;
+    } else {
+        /* no cached data */
+        rc = np_load_data_tree(np_ctx, user_cred, data_filename, read_only, &data->data_tree, &data->fd);
+        CHECK_RC_LOG_GOTO(rc, cleanup, "Unable to load the data tree from '%s'.", data_filename);
+
+        /* check whether we want to start caching */
+        if (data->last_access == time(NULL)) {
+            /* last access within the same second - start caching */
+            data->cached = true;
+            // TODO: save size
+        } else {
+            data->cached = false;
+        }
+    }
+
+    data->last_access = time(NULL);
+    *data_p = data;
+
+cleanup:
+    if (NULL != data_tmp) {
+        np_notif_store_data_free_cb(data_tmp);
+    }
+    pthread_rwlock_unlock(&np_ctx->lock);
+
+    return rc;
+}
+
+/**
+ * @brief TODO
+ */
+static int
+np_save_notif_store_data(np_notif_store_data_ctx_t *data)
+{
+    int rc = SR_ERR_OK;
+
+    CHECK_NULL_ARG(data);
+
+    if (data->cached) {
+        /* leave the data tree not written */
+        // TODO: setup write back timer
+        data->modified = true;
+    } else {
+        rc = np_save_data_tree(data->data_tree, data->fd);
+    }
+
+    return rc;
+}
+
+/**
+ * @brief TODO
+ */
+static void
+np_cleanup_notif_store_data(np_ctx_t *np_ctx, np_notif_store_data_ctx_t *data)
+{
+    CHECK_NULL_ARG_VOID(data);
+
+    SR_LOG_DBG("XXX Cleanup notif store data for '%s'.", data->file_name);
+
+    if (data->cached) {
+        /* do not cleanup the data tree */
+    } else {
+        if (NULL != data->data_tree) {
+            lyd_free_withsiblings(data->data_tree);
+            data->data_tree = NULL;
+        }
+    }
+
+    if (-1 != data->fd && NULL != np_ctx) {
+        sr_locking_set_unlock_close_fd(np_ctx->lock_ctx, data->fd);
+        data->fd = -1;
+    }
+}
+
+/**
  * @brief Returns the name of a file that can be used to store a notification received in given time.
  */
 static int
@@ -751,6 +915,10 @@ np_init(rp_ctx_t *rp_ctx, const char *schema_search_dir, const char *data_search
     rc = sr_llist_init(&ctx->commits);
     CHECK_RC_MSG_GOTO(rc, cleanup, "Cannot allocate commits linked-list.");
 
+    /* init btree for notif store data contexts */
+    rc = sr_btree_init(np_notif_store_data_cmp_cb, np_notif_store_data_free_cb, &ctx->notif_store_data);
+    CHECK_RC_MSG_GOTO(rc, cleanup, "Cannot allocate btree for notif. store data contexts.");
+
     /* init subscriptions lock */
     ret = pthread_rwlock_init(&ctx->lock, NULL);
     CHECK_ZERO_MSG_GOTO(ret, rc, SR_ERR_INTERNAL, cleanup, "Subscriptions lock initialization failed.");
@@ -823,6 +991,7 @@ np_cleanup(np_ctx_t *np_ctx)
         }
         sr_llist_cleanup(np_ctx->commits);
 
+        sr_btree_cleanup(np_ctx->notif_store_data);
         sr_btree_cleanup(np_ctx->dst_info_btree);
         pthread_rwlock_destroy(&np_ctx->lock);
 
@@ -1550,11 +1719,11 @@ np_store_event_notification(np_ctx_t *np_ctx, const ac_ucred_t *user_cred, const
 
     char *module_name = NULL;
     char data_filename[PATH_MAX] = { 0, };
+    np_notif_store_data_ctx_t *data = NULL;
     char data_xpath[PATH_MAX] = { 0, };
     char generated_time_buf[TIME_BUF_SIZE] = { 0, };
     struct timespec logged_time_spec = { 0, };
-    struct lyd_node *data_tree = NULL, *new_node = NULL;
-    int fd = -1;
+    struct lyd_node *new_node = NULL;
     int rc = SR_ERR_OK;
 
     CHECK_NULL_ARG3(np_ctx, xpath, notif_data_tree);
@@ -1570,8 +1739,8 @@ np_store_event_notification(np_ctx_t *np_ctx, const ac_ucred_t *user_cred, const
     CHECK_RC_LOG_GOTO(rc, cleanup, "Unable to compose notification data file name for '%s'.", module_name);
 
     /* load notif. data */
-    rc = np_load_data_tree(np_ctx, user_cred, data_filename, false, &data_tree, &fd);
-    CHECK_RC_LOG_GOTO(rc, cleanup, "Unable to load notification store data for module '%s'.", module_name);
+    rc = np_get_notif_store_data(np_ctx, user_cred, data_filename, false, &data);
+    CHECK_RC_LOG_GOTO(rc, cleanup, "Unable to get notification store data for module '%s'.", module_name);
 
     /* format the time & retrieve current time */
     sr_time_to_str(generated_time, generated_time_buf, TIME_BUF_SIZE);
@@ -1581,14 +1750,14 @@ np_store_event_notification(np_ctx_t *np_ctx, const ac_ucred_t *user_cred, const
     snprintf(data_xpath, PATH_MAX - 1, NP_NS_XPATH_NOTIFICATION, xpath, generated_time_buf,
             /* logged-time in hundreds of seconds */
             (uint32_t) (((logged_time_spec.tv_sec * 100) + (uint32_t)(logged_time_spec.tv_nsec / 1.0e7)) % UINT32_MAX));
-    new_node = lyd_new_path(data_tree, np_ctx->ly_ctx, data_xpath, NULL, 0, 0);
+    new_node = lyd_new_path(data->data_tree, np_ctx->ly_ctx, data_xpath, NULL, 0, 0);
     if (NULL == new_node) {
         SR_LOG_WRN("Error by adding new notification entry: %s.", ly_errmsg());
         goto cleanup; /* do not set error code - it may be just too much notifications within the same hundred of second */
     }
-    if (NULL == data_tree) {
+    if (NULL == data->data_tree) {
         /* if the new data tree has been just created */
-        data_tree = new_node;
+        data->data_tree = new_node;
         new_node = new_node->child; /* new_node is 'notifications' container */
     }
 
@@ -1603,13 +1772,13 @@ np_store_event_notification(np_ctx_t *np_ctx, const ac_ucred_t *user_cred, const
     }
 
     /* save notif. data */
-    rc = np_save_data_tree(data_tree, fd);
+    rc = np_save_notif_store_data(data);
     if (SR_ERR_OK == rc) {
         SR_LOG_DBG("Notification successfully logged into '%s' notification store.", module_name);
     }
 
 cleanup:
-    np_cleanup_data_tree(np_ctx, data_tree, fd);
+    np_cleanup_notif_store_data(np_ctx, data);
     free(module_name);
     return rc;
 }
@@ -1621,7 +1790,8 @@ np_get_event_notifications(np_ctx_t *np_ctx, const rp_session_t *rp_session, con
     char *module_name = NULL;
     char req_xpath[PATH_MAX] = { 0, };
     sr_list_t *file_list = NULL, *notif_list = NULL;
-    struct lyd_node *data_tree = NULL, *main_tree = NULL;
+    np_notif_store_data_ctx_t *data = NULL;
+    struct lyd_node *main_tree = NULL;
     struct ly_set *node_set = NULL;
     np_ev_notification_t *notification = NULL;
     time_t effective_stop_time = 0;
@@ -1650,12 +1820,14 @@ np_get_event_notifications(np_ctx_t *np_ctx, const rp_session_t *rp_session, con
 
     /* load all notification files */
     for (size_t i = 0; i < file_list->count; i++) {
-        rc = np_load_data_tree(np_ctx, rp_session->user_credentials, file_list->data[i], true, &data_tree, NULL);
+        rc = np_get_notif_store_data(np_ctx, rp_session->user_credentials, file_list->data[i], true,  &data);
         CHECK_RC_LOG_GOTO(rc, cleanup, "Unable to load notification store data for module '%s'.", module_name);
         if (NULL == main_tree) {
-            main_tree = data_tree;
+            main_tree = lyd_dup(data->data_tree, 1); // TODO: does not need to be duped in case it is not cached
+            np_cleanup_notif_store_data(np_ctx, data);
         } else {
-            ret = lyd_merge(main_tree, data_tree, LYD_OPT_DESTRUCT);
+            ret = lyd_merge(main_tree, data->data_tree, 0);
+            np_cleanup_notif_store_data(np_ctx, data);
             CHECK_ZERO_LOG_GOTO(ret, rc, SR_ERR_INTERNAL, cleanup, "Unable to merge notification trees: %s", ly_errmsg());
         }
     }

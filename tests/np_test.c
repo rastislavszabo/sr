@@ -462,6 +462,20 @@ np_notif_store_test(void **state)
     }
     sr_list_cleanup(notif_list);
 
+    /* retrieve notifications again  */
+    rc = np_get_event_notifications(np_ctx, test_ctx->rp_session_ctx, "/test-module:link-discovered", 0, time(NULL),
+            SR_API_VALUES, &notif_list);
+    assert_int_equal(rc, SR_ERR_OK);
+    assert_non_null(notif_list);
+
+    for (size_t i = 0; i < notif_list->count; i++) {
+        np_ev_notification_t *notification = notif_list->data[i];
+        assert_string_equal(notification->xpath, "/test-module:link-discovered");
+        np_event_notification_cleanup(notification);
+    }
+    sr_list_cleanup(notif_list);
+
+
     rc = np_notification_store_cleanup(np_ctx, false);
     assert_int_equal(rc, SR_ERR_OK);
     ly_ctx_destroy(ctx, NULL);

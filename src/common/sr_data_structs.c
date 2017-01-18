@@ -795,12 +795,12 @@ sr_locking_set_unlock_close_fd(sr_locking_set_t* lock_ctx, int fd)
 
     found_item = sr_btree_search(lock_ctx->fd_index, &lookup_item);
     if (NULL == found_item || -1 == found_item->fd) {
-        SR_LOG_ERR("File %s has not been locked in this context fd (%d)", NULL != found_item ? found_item->filename : "", fd);
+        SR_LOG_ERR("File '%s' has not been locked in this context fd (%d)", NULL != found_item ? found_item->filename : "", fd);
         rc = SR_ERR_INVAL_ARG;
         goto cleanup;
     }
     sr_unlock_fd(found_item->fd);
-    SR_LOG_DBG("File %s (fd = %d) has been unlocked", found_item->filename, fd);
+    SR_LOG_DBG("File '%s' (fd = %d) has been unlocked", found_item->filename, fd);
 
     rc = close(found_item->fd);
     if (SR_ERR_OK != rc) {
