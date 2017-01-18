@@ -4841,11 +4841,12 @@ dm_parse_event_notif(dm_ctx_t *dm_ctx, dm_session_t *session, sr_mem_ctx_t *sr_m
     const struct lys_node *proc_node = NULL;
     struct lyd_node *data_tree = NULL;
     struct lyxml_elem *xml = NULL;
+    bool release_data_tree = false;
     int rc = SR_ERR_OK;
 
     CHECK_NULL_ARG5(dm_ctx, session, notification, notification->xpath, notification->data.xml);
 
-    if (NP_EV_NOTIF_DATA_XML != notification->data_type) {
+    if (NP_EV_NOTIF_DATA_LY_XML != notification->data_type && NP_EV_NOTIF_DATA_LY_TREE != notification->data_type) {
         SR_LOG_ERR_MSG("Invalid notification data type (should be XML).");
         return SR_ERR_INVAL_ARG;
     }
@@ -4865,20 +4866,25 @@ dm_parse_event_notif(dm_ctx_t *dm_ctx, dm_session_t *session, sr_mem_ctx_t *sr_m
         goto cleanup;
     }
 
-    /* duplicate the xml tree for use in the dm_ctx */
-    xml = lyxml_dup(di->schema->ly_ctx, notification->data.xml);
-    if (NULL == xml) {
-        SR_LOG_ERR("Error by duplicating of the notification XML tree: %s", ly_errmsg());
-        rc = SR_ERR_INTERNAL;
-        goto cleanup;
-    }
+    if (NP_EV_NOTIF_DATA_LY_XML == notification->data_type) {
+        /* duplicate the xml tree for use in the dm_ctx */
+        xml = lyxml_dup(di->schema->ly_ctx, notification->data.xml);
+        if (NULL == xml) {
+            SR_LOG_ERR("Error by duplicating of the notification XML tree: %s", ly_errmsg());
+            rc = SR_ERR_INTERNAL;
+            goto cleanup;
+        }
 
-    /* parse the XML into the data tree */
-    data_tree = lyd_parse_xml(di->schema->ly_ctx, &xml /* &notification->data.xml */, LYD_OPT_NOTIF | LYD_OPT_TRUSTED, NULL);
-    if (NULL == data_tree) {
-        SR_LOG_ERR("Error by parsing notification data: %s", ly_errmsg());
-        rc = dm_report_error(session, ly_errmsg(), notification->xpath, SR_ERR_VALIDATION_FAILED);
-        goto cleanup;
+        /* parse the XML into the data tree */
+        data_tree = lyd_parse_xml(di->schema->ly_ctx, &xml, LYD_OPT_NOTIF | LYD_OPT_TRUSTED, NULL);
+        if (NULL == data_tree) {
+            SR_LOG_ERR("Error by parsing notification data: %s", ly_errmsg());
+            rc = dm_report_error(session, ly_errmsg(), notification->xpath, SR_ERR_VALIDATION_FAILED);
+            goto cleanup;
+        }
+        release_data_tree = true;
+    } else {
+        data_tree = notification->data.tree;
     }
 
     /* validate the data tree & add default nodes */
@@ -4897,7 +4903,9 @@ cleanup:
     if (NULL != xml) {
         lyxml_free(di->schema->ly_ctx, xml);
     }
-    lyd_free_withsiblings(data_tree);
+    if (release_data_tree) {
+        lyd_free_withsiblings(data_tree);
+    }
     free(module_name);
 
     return rc;

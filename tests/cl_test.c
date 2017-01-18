@@ -5336,6 +5336,10 @@ cl_event_notif_replay_test(void **state)
     assert_true(cb_status.link_removed >= 3);
     assert_int_equal(0, pthread_mutex_unlock(&cb_status.mutex));
 
+    /* replay the notifications from future (zero notifications) */
+    rc = sr_event_notif_replay(session, subscription, time(NULL) + 1, time(NULL) + 2);
+    assert_int_equal(rc, SR_ERR_OK);
+
     /* unsubscribe */
     rc = sr_unsubscribe(NULL, subscription);
     assert_int_equal(rc, SR_ERR_OK);

@@ -620,7 +620,7 @@ np_cleanup_notif_store_data(np_ctx_t *np_ctx, np_notif_store_data_ctx_t *data)
 {
     CHECK_NULL_ARG_VOID(data);
 
-    SR_LOG_DBG("XXX Cleanup notif store data for '%s'.", data->file_name);
+    SR_LOG_DBG("Cleanup notif store data for '%s'.", data->file_name);
 
     if (data->cached) {
         /* do not cleanup the data tree */
@@ -837,11 +837,16 @@ np_event_notification_entry_fill(np_ev_notification_t *notification, struct lyd_
                 rc = sr_str_to_time((char*)node_ll->value_str, &notification->timestamp);
                 CHECK_RC_MSG_GOTO(rc, cleanup, "String to time conversion failed.");
             }
-            if (0 == strcmp(node->schema->name, "data") && LYS_ANYDATA == node->schema->nodetype) {
-                node_anydata = (struct lyd_node_anydata*)node;
-                if (LYD_ANYDATA_XML == node_anydata->value_type) {
-                    notification->data.xml = node_anydata->value.xml;
-                    notification->data_type = NP_EV_NOTIF_DATA_XML;
+            if (0 == strcmp(node->schema->name, "data")) {
+                if (LYS_ANYDATA == node->schema->nodetype) {
+                    node_anydata = (struct lyd_node_anydata*)node;
+                    if (LYD_ANYDATA_XML == node_anydata->value_type) {
+                        notification->data.xml = node_anydata->value.xml;
+                        notification->data_type = NP_EV_NOTIF_DATA_LY_XML;
+                    } else if (LYD_ANYDATA_DATATREE == node_anydata->value_type) {
+                        notification->data.tree = node_anydata->value.tree;
+                        notification->data_type = NP_EV_NOTIF_DATA_LY_TREE;
+                    }
                 }
             }
         }
@@ -1766,12 +1771,13 @@ np_get_event_notifications(np_ctx_t *np_ctx, const rp_session_t *rp_session, con
 {
     char *module_name = NULL;
     char req_xpath[PATH_MAX] = { 0, };
-    sr_list_t *file_list = NULL, *notif_list = NULL;
-    np_notif_store_data_ctx_t *data = NULL;
+    sr_list_t *file_list = NULL, *notif_list = NULL, *data_list = NULL;
+    np_notif_store_data_ctx_t *data = NULL, *data_tmp = NULL;
     struct lyd_node *main_tree = NULL;
     struct ly_set *node_set = NULL;
     np_ev_notification_t *notification = NULL;
     time_t effective_stop_time = 0;
+    bool release_main_tree = false;
     int rc = SR_ERR_OK, ret = 0;
 
     CHECK_NULL_ARG3(np_ctx, xpath, notifications);
@@ -1796,15 +1802,28 @@ np_get_event_notifications(np_ctx_t *np_ctx, const rp_session_t *rp_session, con
     CHECK_RC_MSG_GOTO(rc, cleanup, "Unable to retrieve notification file list.");
 
     /* load all notification files */
+    rc = sr_list_init(&data_list);
+    CHECK_RC_MSG_GOTO(rc, cleanup, "Unable to initialize data list.");
+
     for (size_t i = 0; i < file_list->count; i++) {
-        rc = np_get_notif_store_data(np_ctx, rp_session->user_credentials, file_list->data[i], true,  &data);
+        rc = np_get_notif_store_data(np_ctx, rp_session->user_credentials, file_list->data[i], true,  &data_tmp);
         CHECK_RC_LOG_GOTO(rc, cleanup, "Unable to load notification store data for module '%s'.", module_name);
+
+        rc = sr_list_add(data_list, data_tmp);
+        CHECK_RC_MSG_GOTO(rc, cleanup, "Error by adding notification into list.");
+        data = data_tmp;
+        data_tmp = NULL;
+
         if (NULL == main_tree) {
-            main_tree = lyd_dup(data->data_tree, 1); // TODO: does not need to be duped in case it is not cached
-            np_cleanup_notif_store_data(np_ctx, data);
+            if (data->cached) {
+                main_tree = lyd_dup(data->data_tree, 1);
+                release_main_tree = true;
+            } else {
+                main_tree = data->data_tree;
+                release_main_tree = false; /* will be released with data */
+            }
         } else {
             ret = lyd_merge(main_tree, data->data_tree, 0);
-            np_cleanup_notif_store_data(np_ctx, data);
             CHECK_ZERO_LOG_GOTO(ret, rc, SR_ERR_INTERNAL, cleanup, "Unable to merge notification trees: %s", ly_errmsg());
         }
     }
@@ -1858,9 +1877,20 @@ cleanup:
         }
         sr_list_cleanup(notif_list);
     }
-    ly_set_free(node_set);
-    lyd_free_withsiblings(main_tree);
+    if (release_main_tree) {
+        lyd_free_withsiblings(main_tree);
+    }
+    if (NULL != data_list) {
+        for (size_t i = 0; i < data_list->count; i++) {
+            np_cleanup_notif_store_data(np_ctx, data);
+        }
+        sr_list_cleanup(data_list);
+    }
+    if (NULL != data_tmp) {
+        np_cleanup_notif_store_data(np_ctx, data_tmp);
+    }
     sr_free_list_of_strings(file_list);
+    ly_set_free(node_set);
     free(module_name);
     return rc;
 }

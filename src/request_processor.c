@@ -3920,10 +3920,10 @@ rp_cleanup(rp_ctx_t *rp_ctx)
             }
         }
         pthread_rwlock_destroy(&rp_ctx->commit_lock);
-        dm_cleanup(rp_ctx->dm_ctx);
         np_cleanup(rp_ctx->np_ctx);
         pm_cleanup(rp_ctx->pm_ctx);
         ac_cleanup(rp_ctx->ac_ctx);
+        dm_cleanup(rp_ctx->dm_ctx);
         sr_cbuff_cleanup(rp_ctx->request_queue);
         rp_cleanup_internal_state_data_records(rp_ctx);
         free(rp_ctx);

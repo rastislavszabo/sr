@@ -758,7 +758,7 @@ dm_event_notif_parse_test(void **state)
     notification->xpath = strdup("/test-module:link-removed");
     assert_non_null(notification->xpath);
     notification->data.xml = xml;
-    notification->data_type = NP_EV_NOTIF_DATA_XML;
+    notification->data_type = NP_EV_NOTIF_DATA_LY_XML;
 
     /* parse to values */
     rc = dm_parse_event_notif(ctx, session, NULL, notification, SR_API_VALUES);
@@ -779,7 +779,7 @@ dm_event_notif_parse_test(void **state)
     notification->xpath = strdup("/test-module:link-removed");
     assert_non_null(notification->xpath);
     notification->data.xml = xml;
-    notification->data_type = NP_EV_NOTIF_DATA_XML;
+    notification->data_type = NP_EV_NOTIF_DATA_LY_XML;
 
     /* parse to values */
     rc = dm_parse_event_notif(ctx, session, NULL, notification, SR_API_TREES);
