@@ -54,14 +54,16 @@ typedef struct np_dst_info_s {
  * @brief Structure representing one notification store data file in memory.
  */
 typedef struct np_notif_store_data_ctx_s {
-    const char *file_name;       /**< Name of the file with data. */
-    size_t file_size;            /**< Size of the file to determine file changes from another process. */
-    struct lyd_node *data_tree;  /**< Data tree with the notifications. */
-    int fd;                      /**< File descriptor of the opened data file, -1 if not used. */
-    bool cached;                 /**< TRUE in case that the data_tree should be cached. */
-    bool modified;               /**< The data tree has been modified since the last read, write is needed. */
-    time_t last_access;          /**< Time of the last access to this data. In case of multiple accesses per second,
-                                      data will be cached and write-back will be performed. */
+    const char *file_name;           /**< Name of the file with data. */
+    size_t file_size;                /**< Size of the file to determine file changes from another process. */
+    struct lyd_node *data_tree;      /**< Data tree with the notifications. */
+    pthread_rwlock_t datatree_lock;  /**< Read-write lock for the data tree. */
+    int fd;                          /**< File descriptor of the opened data file, -1 if not used. */
+    bool cached;                     /**< TRUE in case that the data_tree should be cached. */
+    bool modified;                   /**< The data tree has been modified since the last read, write is needed. */
+    time_t last_access;              /**< Time of the last access to this data. In case of multiple accesses per second,
+                                          data will be cached and write-back will be performed. */
+    pthread_mutex_t lock;            /**< Lock for the context itself. */
 } np_notif_store_data_ctx_t;
 
 /**
@@ -178,6 +180,8 @@ np_notif_store_data_free_cb(void *item)
         if (NULL != data->data_tree) {
             lyd_free_withsiblings(data->data_tree);
         }
+        pthread_rwlock_destroy(&data->datatree_lock);
+        pthread_mutex_destroy(&data->lock);
         free(data);
     }
 }
@@ -513,14 +517,14 @@ np_save_data_tree(struct lyd_node *data_tree, int fd)
 }
 
 /**
- * @brief TODO
+ * @brief Gets data of a notification store file from the file or from cache.
  */
 static int
 np_get_notif_store_data(np_ctx_t *np_ctx, const ac_ucred_t *user_cred, const char *data_filename,
         const bool read_only, np_notif_store_data_ctx_t **data_p)
 {
     np_notif_store_data_ctx_t data_lookup = { 0, }, *data = NULL, *data_tmp = NULL;
-    int rc = SR_ERR_OK;
+    int ret = 0, rc = SR_ERR_OK;
 
     CHECK_NULL_ARG4(np_ctx, np_ctx->rp_ctx, data_filename, data_p);
 
@@ -539,12 +543,29 @@ np_get_notif_store_data(np_ctx_t *np_ctx, const ac_ucred_t *user_cred, const cha
         data_tmp->file_name = strdup(data_filename);
         CHECK_NULL_NOMEM_GOTO(data_tmp->file_name, rc, cleanup);
 
+        ret = pthread_mutex_init(&data_tmp->lock, NULL);
+        CHECK_ZERO_MSG_GOTO(ret, rc, SR_ERR_INTERNAL, cleanup, "Notif. data lock initialization failed.");
+        ret = pthread_rwlock_init(&data_tmp->datatree_lock, NULL);
+        CHECK_ZERO_MSG_GOTO(ret, rc, SR_ERR_INTERNAL, cleanup, "Notif. datatree lock initialization failed.");
+
+        /* acquire write lock and insert new data context */
+        pthread_rwlock_unlock(&np_ctx->lock);
+        pthread_rwlock_wrlock(&np_ctx->lock);
         rc = sr_btree_insert(np_ctx->notif_store_data, data_tmp);
         data = data_tmp;
         data_tmp = NULL;
     }
 
-    // TODO: lock data
+    /* will be unlocked in np_cleanup_notif_store_data */
+    if (read_only) {
+        SR_LOG_DBG("'%s' datatree RD lock.", data->file_name);
+        pthread_rwlock_rdlock(&data->datatree_lock);
+    } else {
+        SR_LOG_DBG("'%s' datatree WR lock.", data->file_name);
+        pthread_rwlock_wrlock(&data->datatree_lock);
+    }
+
+    pthread_mutex_lock(&data->lock);
 
     if (NULL != data->data_tree) {
         /* use cached data if it is valid */
@@ -553,19 +574,23 @@ np_get_notif_store_data(np_ctx_t *np_ctx, const ac_ucred_t *user_cred, const cha
     } else {
         /* no cached data */
         rc = np_load_data_tree(np_ctx, user_cred, data_filename, read_only, &data->data_tree, &data->fd);
-        CHECK_RC_LOG_GOTO(rc, cleanup, "Unable to load the data tree from '%s'.", data_filename);
-
-        /* check whether we want to start caching */
-        if (data->last_access == time(NULL)) {
-            /* last access within the same second - start caching */
-            data->cached = true;
-            // TODO: save size
+        if (SR_ERR_OK != rc) {
+            SR_LOG_ERR("Unable to load the data tree from '%s'.", data_filename);
         } else {
-            data->cached = false;
+            /* check whether we want to start caching */
+            if (data->last_access == time(NULL)) {
+                /* last access within the same second - start caching */
+                data->cached = true;
+                // TODO: save size
+            } else {
+                data->cached = false;
+            }
         }
     }
-
     data->last_access = time(NULL);
+
+    pthread_mutex_unlock(&data->lock);
+
     *data_p = data;
 
 cleanup:
@@ -578,7 +603,7 @@ cleanup:
 }
 
 /**
- * @brief TODO
+ * @brief Saves data of a notification store file to the file or to cache.
  */
 static int
 np_save_notif_store_data(np_notif_store_data_ctx_t *data)
@@ -586,6 +611,8 @@ np_save_notif_store_data(np_notif_store_data_ctx_t *data)
     int rc = SR_ERR_OK;
 
     CHECK_NULL_ARG(data);
+
+    pthread_mutex_lock(&data->lock);
 
     if (data->cached) {
         /* leave the data tree not written */
@@ -595,11 +622,13 @@ np_save_notif_store_data(np_notif_store_data_ctx_t *data)
         rc = np_save_data_tree(data->data_tree, data->fd);
     }
 
+    pthread_mutex_unlock(&data->lock);
+
     return rc;
 }
 
 /**
- * @brief TODO
+ * @brief Cleans up notifications store data and resources.
  */
 static void
 np_cleanup_notif_store_data(np_ctx_t *np_ctx, np_notif_store_data_ctx_t *data)
@@ -607,6 +636,8 @@ np_cleanup_notif_store_data(np_ctx_t *np_ctx, np_notif_store_data_ctx_t *data)
     CHECK_NULL_ARG_VOID(data);
 
     SR_LOG_DBG("Cleanup notif store data for '%s'.", data->file_name);
+
+    pthread_mutex_lock(&data->lock);
 
     if (data->cached) {
         /* do not cleanup the data tree */
@@ -621,6 +652,11 @@ np_cleanup_notif_store_data(np_ctx_t *np_ctx, np_notif_store_data_ctx_t *data)
         sr_locking_set_unlock_close_fd(np_ctx->lock_ctx, data->fd);
         data->fd = -1;
     }
+
+    pthread_mutex_unlock(&data->lock);
+
+    SR_LOG_DBG("'%s' datatree unlock.", data->file_name);
+    pthread_rwlock_unlock(&data->datatree_lock); /* locked in np_get_notif_store_data */
 }
 
 /**
@@ -1871,7 +1907,7 @@ cleanup:
     }
     if (NULL != data_list) {
         for (size_t i = 0; i < data_list->count; i++) {
-            np_cleanup_notif_store_data(np_ctx, data);
+            np_cleanup_notif_store_data(np_ctx, data_list->data[i]);
         }
         sr_list_cleanup(data_list);
     }

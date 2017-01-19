@@ -958,9 +958,9 @@ main (int argc, char **argv)
         {perf_set_delete_100_test, "Set & delete 100 lists", OP_COUNT_COMMIT, sysrepo_setup, sysrepo_teardown},
         {perf_commit_test, "Commit one leaf change", OP_COUNT_COMMIT, sysrepo_setup, sysrepo_teardown},
         {perf_data_provide_test, "Operational data provide", OP_COUNT_COMMIT, data_provide_setup, data_provide_teardown},
-        {perf_rpc_test, "RPC", OP_COUNT_COMMIT, sysrepo_setup, sysrepo_teardown},
-        {perf_ev_notification_ephemeral_test, "Event notification - ephemeral", OP_COUNT_COMMIT, sysrepo_setup, sysrepo_teardown},
-        {perf_ev_notification_store_test, "Event notification - store", OP_COUNT_COMMIT, sysrepo_setup, sysrepo_teardown},
+        {perf_rpc_test, "RPC", OP_COUNT, sysrepo_setup, sysrepo_teardown},
+        {perf_ev_notification_ephemeral_test, "Event notification - ephemeral", OP_COUNT, sysrepo_setup, sysrepo_teardown},
+        {perf_ev_notification_store_test, "Event notification - store", OP_COUNT, sysrepo_setup, sysrepo_teardown},
         {perf_libyang_get_node, "Libyang get one node", OP_COUNT, libyang_setup, libyang_teardown},
         {perf_libyang_get_all_list, "Libyang get all list", OP_COUNT, libyang_setup, libyang_teardown},
     };
