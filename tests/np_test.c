@@ -458,24 +458,25 @@ np_notif_store_test(void **state)
     }
     sr_list_cleanup(notif_list);
 
-    /* retrieve other notifications */
-    rc = np_get_event_notifications(np_ctx, test_ctx->rp_session_ctx, "/ietf-netconf-notifications:netconf-config-change",
-            0, time(NULL), SR_API_VALUES, &notif_list);
-    assert_int_equal(rc, SR_ERR_OK);
-    if (NULL != notif_list) {
-        for (size_t i = 0; i < notif_list->count; i++) {
-            np_ev_notification_t *notification = notif_list->data[i];
-            assert_string_equal(notification->xpath, "/ietf-netconf-notifications:netconf-config-change");
-            np_event_notification_cleanup(notification);
-        }
-        sr_list_cleanup(notif_list);
-    }
+//    /* retrieve other notifications */
+//    rc = np_get_event_notifications(np_ctx, test_ctx->rp_session_ctx, "/ietf-netconf-notifications:netconf-config-change",
+//            0, time(NULL), SR_API_VALUES, &notif_list);
+//    assert_int_equal(rc, SR_ERR_OK);
+//    if (NULL != notif_list) {
+//        for (size_t i = 0; i < notif_list->count; i++) {
+//            np_ev_notification_t *notification = notif_list->data[i];
+//            assert_string_equal(notification->xpath, "/ietf-netconf-notifications:netconf-config-change");
+//            np_event_notification_cleanup(notification);
+//        }
+//        sr_list_cleanup(notif_list);
+//    }
 
     /* retrieve zero (future) notifications */
     rc = np_get_event_notifications(np_ctx, test_ctx->rp_session_ctx, "/test-module:link-discovered",
             time(NULL) + 1, time(NULL) + 2, SR_API_VALUES, &notif_list);
     assert_int_equal(rc, SR_ERR_OK);
     assert_true(NULL == notif_list || notif_list->count == 0);
+    sr_list_cleanup(notif_list);
 
     rc = np_notification_store_cleanup(np_ctx, false);
     assert_int_equal(rc, SR_ERR_OK);

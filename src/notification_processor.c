@@ -513,20 +513,6 @@ np_save_data_tree(struct lyd_node *data_tree, int fd)
 }
 
 /**
- * @brief Cleans up specified data tree and closes specified file descriptor.
- */
-static void
-np_cleanup_data_tree(np_ctx_t *np_ctx, struct lyd_node *data_tree, int fd)
-{
-    if (NULL != data_tree) {
-        lyd_free_withsiblings(data_tree);
-    }
-    if (-1 != fd && NULL != np_ctx) {
-        sr_locking_set_unlock_close_fd(np_ctx->lock_ctx, fd);
-    }
-}
-
-/**
  * @brief TODO
  */
 static int
