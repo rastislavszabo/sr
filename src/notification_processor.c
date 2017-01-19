@@ -1371,14 +1371,13 @@ np_get_module_change_subscriptions(np_ctx_t *np_ctx, const ac_ucred_t *user_cred
         }
     }
 
-    return SR_ERR_OK;
-
 cleanup:
-
     np_subscriptions_list_cleanup(subscriptions_list_1);
     np_subscriptions_list_cleanup(subscriptions_list_2);
-    np_subscriptions_list_cleanup(*subscriptions_list);
-    *subscriptions_list = NULL;
+    if (SR_ERR_OK != rc) {
+        np_subscriptions_list_cleanup(*subscriptions_list);
+        *subscriptions_list = NULL;
+    }
 
     return rc;
 }
@@ -1649,9 +1648,13 @@ np_subscription_content_cleanup(np_subscription_t *subscription)
 {
     if (NULL != subscription) {
         free((void*)subscription->dst_address);
+        subscription->dst_address = NULL;
         free((void*)subscription->module_name);
+        subscription->module_name = NULL;
         free((void*)subscription->xpath);
+        subscription->xpath = NULL;
         free((void*)subscription->username);
+        subscription->username = NULL;
     }
 }
 

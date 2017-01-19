@@ -486,6 +486,8 @@ pm_module_data_version_save(pm_ctx_t *pm_ctx, const char *module_name, pm_module
     struct stat file_stat = { 0, };
     int ret = 0, rc = SR_ERR_OK;
 
+    CHECK_NULL_ARG3(pm_ctx, module_name, md);
+
     rc = sr_get_persist_data_file_name_buf(pm_ctx->data_search_dir, module_name, file_name, PATH_MAX);
     CHECK_RC_MSG_GOTO(rc, cleanup, "Unable to get persist data file name.");
 
@@ -533,6 +535,8 @@ pm_module_data_version_changed(pm_ctx_t *pm_ctx, const char *module_name, pm_mod
     uint64_t timestamp = 0;
     int ret = 0, rc = SR_ERR_OK;
 
+    CHECK_NULL_ARG4(pm_ctx, module_name, md, changed);
+
     *changed = true;
 
     rc = sr_get_persist_data_file_name_buf(pm_ctx->data_search_dir, module_name, file_name, PATH_MAX);
@@ -568,7 +572,7 @@ pm_module_data_version_changed(pm_ctx_t *pm_ctx, const char *module_name, pm_mod
         }
     }
 
-    if (!changed) {
+    if (! *changed) {
         SR_LOG_DBG("Module '%s' persist file version matches with cached value (%"PRIu64").", module_name, timestamp);
     } else {
         SR_LOG_DBG("Module '%s' persist file version does not match with the last cached value (%"PRIu64").", module_name, timestamp);
